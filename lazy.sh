@@ -9,7 +9,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 # 配置文件
-config_file="${HOME}/printer_data/config/lazyfirmware/config.cfg"
+config_file="${HOME}/printer_data/config//Config/lazyfirmware/config.cfg"
 
 clear
 
@@ -39,7 +39,7 @@ update_mcu() {
     pushd ~/klipper
     make olddefconfig
     make clean
-    make
+    make -j64
     echo -e ""
     read -e -p "${yellow}固件编译完成，请检查上面是否有错误。 按键盘 [Enter] 继续更新固件，或者按 [Ctrl+C] 取消${default}"
     echo -e ""

@@ -28,6 +28,10 @@ touch ${HOME}/printer_data/config/lazyfirmware/config.cfg
 ```
 修改config.cfg文件，文件内容示例：
 ```
+[global]
+can_interface=can0
+language=zh_cn
+
 [EBB]
 ID=c5360983cdc4
 MODE=CAN
@@ -63,6 +67,11 @@ CONFIG=/home/samuel/LazyFirmware/config/linux_process/linux.config
 ```
 配置项说明
 ```
+can_interface=can网络名称，通常是can0
+language=zh_cn，不写默认显示英文
+
+主板设置按照以下格式：
+
 [主板名字]
 ID=主板的UUID或者/dev/serial/by-id/*路径，如果是上位机填NULL
     获取方法：

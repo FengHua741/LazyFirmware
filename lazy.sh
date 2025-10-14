@@ -9,37 +9,55 @@
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
+#------------------------------------------------------------
 # Path to configuration file
 # 配置文件路径
+#------------------------------------------------------------
 config_file="${HOME}/printer_data/config/lazyfirmware/config.cfg"
 
+#------------------------------------------------------------
 # Clear the terminal screen
 # 清屏
+#------------------------------------------------------------
 clear
 
+#------------------------------------------------------------
 # Define message colors
 # 定义颜色
+#------------------------------------------------------------
 green=$(echo -en "\e[92m")
 yellow=$(echo -en "\e[93m")
 red=$(echo -en "\e[91m")
 default=$(echo -en "\e[39m")
 
-# Function to get configuration value from INI-style config file
+#------------------------------------------------------------
+# Get configuration value from INI-style config file
 # 从配置文件中提取配置
+#------------------------------------------------------------
 get_config() {
-    section=$1
-    key=$2
-    value=$(awk -F '=' '/\['$section'\]/{a=1}a==1&&$1~/'$key'/{print $2;exit}' $config_file | tr -d '\r')
+    section="$1"
+    key="$2"
+    value=$(awk -F'=' -v s="[$section]" -v k="$key" '
+    $0==s {in_section=1; next}
+    /^\[/ {in_section=0}
+    in_section && $1==k {
+        gsub(/^[ \t]+|[ \t]+$/, "", $2);
+        print $2; exit
+    }' "$config_file" | tr -d '\r')
     echo "$value"
 }
 
+#------------------------------------------------------------
 # Load language setting from config (default to English)
 # 加载语言配置（默认英文）
+#------------------------------------------------------------
 lang=$(get_config "global" "language")
 [ -z "$lang" ] && lang="en"
 
+#------------------------------------------------------------
 # Define all multilingual messages
 # 定义多语言
+#------------------------------------------------------------
 if [[ "$lang" == "zh_cn" ]]; then
     MSG_MATCHING_CONFIG="匹配配置文件..."
     MSG_CONFIG_SUCCESS="配置文件匹配完成"
@@ -86,98 +104,125 @@ else
     MSG_SWITCHING_DFU="Switching board to DFU, please wait %s seconds..."
 fi
 
+#------------------------------------------------------------
 # Prevent running as root
 # ROOT检测
-[ $(id -u) -eq 0 ] || [ "$EUID" -eq 0 ] && echo -e "${red}${MSG_ROOT_WARNING}${default}" && exit 1
+#------------------------------------------------------------
+if [ "$EUID" -eq 0 ]; then
+    echo -e "${red}${MSG_ROOT_WARNING}${default}"
+    exit 1
+fi
 
-# Function to update firmware
+#------------------------------------------------------------
+# Check and update/clone katapult
+# 检查katapult
+#------------------------------------------------------------
+check_katapult() {
+    cd ~ || exit 1
+    if [ ! -d "katapult" ]; then
+        echo -e "\n${yellow}${MSG_KATAPULT_DOWNLOADING}${default}"
+        git clone https://github.com/Arksine/katapult.git \
+            && echo -e "\n${green}${MSG_KATAPULT_SUCCESS}${default}\n" \
+            || { echo -e "\n${red}${MSG_KATAPULT_FAIL}${default}\n"; exit 1; }
+    else
+        echo -e "\n${yellow}Updating katapult...${default}"
+        pushd ~/katapult >/dev/null || exit 1
+        git fetch --all && git reset --hard origin/master \
+            && echo -e "\n${green}${MSG_KATAPULT_SUCCESS}${default}" \
+            || { echo -e "\n${red}${MSG_KATAPULT_FAIL}${default}"; exit 1; }
+        popd >/dev/null
+    fi
+}
+
+#------------------------------------------------------------
+# Stop Klipper service
+# 停止klipper服务
+#------------------------------------------------------------
+stop_klipper_service() {
+    echo -e "\n${yellow}${MSG_STOP_KLIPPER}${default}"
+    sudo service klipper stop && echo -e "${green}${MSG_KLIPPER_SUCCESS}${default}" \
+        || { echo -e "\n${red}${MSG_KLIPPER_FAIL}${default}"; exit 1; }
+}
+
+#------------------------------------------------------------
+# Start Klipper service
+# 启动klipper服务
+#------------------------------------------------------------
+start_klipper_service() {
+    echo -e "\n${yellow}${MSG_START_KLIPPER}${default}"
+    sudo service klipper start && echo -e "${green}${MSG_KLIPPER_SUCCESS}${default}" \
+        || { echo -e "\n${red}${MSG_KLIPPER_FAIL}${default}"; exit 1; }
+}
+
+#------------------------------------------------------------
+# Update firmware
 # 更新固件
+#------------------------------------------------------------
 update_mcu() {
+    pushd ~/klipper >/dev/null || return 1
+    make clean
     echo -e "${yellow}${MSG_MATCHING_CONFIG} $2${default}"
-    cp -f "$2" ~/klipper/.config || { echo -e "\n${red}${MSG_CONFIG_FAIL}${default}"; exit 1; }
+    cp -f "$2" ~/klipper/.config || { echo -e "\n${red}${MSG_CONFIG_FAIL}${default}"; return 1; }
     echo -e "${green}${MSG_CONFIG_SUCCESS}${default}\n"
 
     echo -e "${yellow}${MSG_COMPILING}${default}"
-    pushd ~/klipper
-    make olddefconfig && make clean && make
+    make olddefconfig && make || return 1;
     echo -e ""
 
     # Wait for user confirmation before flashing
     # 刷写前用户确认
-    read -e -p "${yellow}${MSG_PRESS_ENTER}${default}"
+    echo -e "${yellow}${MSG_PRESS_ENTER}${default}"
     echo -e ""
+    read -e
 
     # Select flashing method based on mode
     # 匹配刷写模式
     case "$3" in
         CAN)
-            python3 ~/katapult/scripts/flashtool.py -i ${can_interface:="can0"} -f ~/klipper/out/klipper.bin -u $1;;
+            python3 ~/katapult/scripts/flashtool.py -i ${can_interface:="can0"} -f ~/klipper/out/klipper.bin -u "$1" || return 1;;
         CAN_BRIDGE_DFU)
-            python3 ~/katapult/scripts/flashtool.py -i ${can_interface:="can0"} -u $1 -r
+            python3 ~/katapult/scripts/flashtool.py -i ${can_interface:="can0"} -u "$1" -r
             echo -e "\n${red}$(printf "$MSG_SWITCHING_DFU" 5)${default}\n"
             sleep 5
-            make flash FLASH_DEVICE=0483:df11;;
+            make flash FLASH_DEVICE=0483:df11 || return 1;;
         CAN_BRIDGE_KATAPULT)
-            python3 ~/katapult/scripts/flashtool.py -i ${can_interface:="can0"} -u $1 -r
+            python3 ~/katapult/scripts/flashtool.py -i ${can_interface:="can0"} -u "$1" -r
             echo -e "\n${red}$(printf "$MSG_SWITCHING_KATAPULT" 5)${default}\n"
             sleep 5
-            make flash FLASH_DEVICE=$4;;
+            make flash FLASH_DEVICE="$4" || return 1;;
         USB_DFU)
-            make flash FLASH_DEVICE=$1;;
+            make flash FLASH_DEVICE="$1" || return 1;;
         USB_KATAPULT)
-            python3 ~/katapult/scripts/flashtool.py -d $1 -r
+            python3 ~/katapult/scripts/flashtool.py -d "$1" -r
             echo -e "\n${red}$(printf "$MSG_SWITCHING_KATAPULT" 2)${default}\n"
             sleep 2
-            python3 ~/katapult/scripts/flashtool.py -f ~/klipper/out/klipper.bin -d $4;;
+            python3 ~/katapult/scripts/flashtool.py -f ~/klipper/out/klipper.bin -d "$4" || return 1;;
         HOST)
-            make flash;;
+            make flash || return 1;;
     esac
-    popd
+    return 0
 }
 
-# Function to check and update/clone katapult
-# 检查katapult
-check_katapult() {
-    cd ~
-    if [ ! -d "katapult" ]; then
-        echo -e "\n${yellow}${MSG_KATAPULT_DOWNLOADING}${default}"
-        git clone https://github.com/Arksine/katapult.git && echo -e "\n${green}${MSG_KATAPULT_SUCCESS}${default}\n" || { echo -e "\n${red}${MSG_KATAPULT_FAIL}${default}\n"; exit 1; }
-    else
-        echo -e "\n${yellow}Updating katapult...${default}"
-        pushd ~/katapult && git pull && echo -e "\n${green}${MSG_KATAPULT_SUCCESS}${default}" || { echo -e "\n${red}${MSG_KATAPULT_FAIL}${default}"; exit 1; }
-        popd
-    fi
-}
-
-# Function to stop Klipper service
-# 停止klipper服务
-stop_klipper_service() {
-    echo -e "\n${yellow}${MSG_STOP_KLIPPER}${default}"
-    sudo service klipper stop && echo -e "${green}${MSG_KLIPPER_SUCCESS}${default}" || { echo -e "\n${red}${MSG_KLIPPER_FAIL}${default}"; exit 1; }
-}
-
-# Function to start Klipper service
-# 启动klipper服务
-start_klipper_service() {
-    echo -e "\n${yellow}${MSG_START_KLIPPER}${default}"
-    sudo service klipper start && echo -e "${green}${MSG_KLIPPER_SUCCESS}${default}" || { echo -e "\n${red}${MSG_KLIPPER_FAIL}${default}"; exit 1; }
-}
+#------------------------------------------------------------
+# Main
+# 主程序
+#------------------------------------------------------------
 
 # Check/clone/update katapult before flashing
 # 检查katapult
 check_katapult
 
-# Main routine: parse config, update each section
-# 主程序，分析配置文件
 if [ -f "$config_file" ]; then
     declare -a sections=()
     while IFS= read -r line; do
-        [[ $line =~ ^\[[^#] ]] && section=$(echo "$line" | tr -d '[]' | tr -d '\r') && sections+=("$section")
+        [[ $line =~ ^\[[^#] ]] && section=$(echo "$line" | tr -d '[]\r') && sections+=("$section")
     done < "$config_file"
 
     # Display number of MCUs to update
     # 显示需要更新的MCU数量
-    printf "${green}${MSG_TOTAL_MCU}${default}\n" "$(( ${#sections[@]} - 1 ))"
+    count=0
+    for s in "${sections[@]}"; do [[ $s != "global" ]] && ((count++)); done
+    printf "${green}${MSG_TOTAL_MCU}${default}\n" "$count"
 
     # Stop klipper before update
     # 更新前需停止klipper服务
@@ -186,27 +231,27 @@ if [ -f "$config_file" ]; then
     # Iterate over each section and update firmware
     # 依次执行更新
     for section in "${sections[@]}"; do
-        if [[ $section == "global" ]]; then
-            can_interface=$(get_config "global" "can_interface")
+        [[ $section == "global" ]] && can_interface=$(get_config "global" "can_interface") && continue
+        echo -e "\n${yellow}${MSG_PREPARE_UPDATE} ${section} ...${default}"
+
+        ID=$(get_config "$section" "ID")
+        MODE=$(get_config "$section" "MODE")
+        CONFIG=$(get_config "$section" "CONFIG")
+        if [[ "$MODE" == *"KATAPULT"* ]]; then
+            KATAPULT_SERIAL=$(get_config "$section" "KATAPULT_SERIAL")
+            update_mcu "$ID" "$CONFIG" "$MODE" "$KATAPULT_SERIAL"
         else
-            echo -e "\n${yellow}${MSG_PREPARE_UPDATE} ${section} ...${default}"
-            ID=$(get_config $section "ID")
-            MODE=$(get_config $section "MODE")
-            CONFIG=$(get_config $section "CONFIG")
-            if [[ "$MODE" == *"KATAPULT"* ]]; then
-                KATAPULT_SERIAL=$(get_config $section "KATAPULT_SERIAL")
-                update_mcu $ID $CONFIG $MODE $KATAPULT_SERIAL
-            else
-                update_mcu $ID $CONFIG $MODE
-            fi
-            # Show success/failure
-            # 显示成功/失败
-            if [ $? -eq 0 ]; then
-                printf "\n${green}${MSG_UPDATE_SUCCESS}${default}\n" "$section"
-            else
-                printf "\n${red}${MSG_UPDATE_FAIL}${default}\n" "$section"
-                exit 1
-            fi
+            update_mcu "$ID" "$CONFIG" "$MODE"
+        fi
+        popd >/dev/null
+
+        # Show success/failure
+        # 显示成功/失败
+        if [ $? -eq 0 ]; then
+            printf "\n${green}%s${default}\n" "$(printf "$MSG_UPDATE_SUCCESS" "$section")"
+        else
+            printf "\n${red}%s${default}\n" "$(printf "$MSG_UPDATE_FAIL" "$section")"
+            exit 1
         fi
     done
 
@@ -218,4 +263,3 @@ else
     echo -e "${red}${MSG_CFG_NOT_FOUND}${default}"
     exit 1
 fi
-
